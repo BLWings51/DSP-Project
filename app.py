@@ -353,21 +353,7 @@ def main():
                 "Dependence Plot"
             ])
             
-            st.subheader("SHAP Force Plot")
-            if explainers and model_type.lower() in explainers:
-                # Use preloaded explainer if available
-                shap_values = explainers[model_type.lower()].shap_values(transaction_values)
-                fig = plt.figure()
-                shap.force_plot(
-                    explainers[model_type.lower()].expected_value,
-                    shap_values[0] if isinstance(shap_values, list) else shap_values,
-                    transaction_values[0],
-                    feature_names=feature_names,
-                    matplotlib=True,
-                    show=False
-                )
-                st.pyplot(fig)
-            else:
+            with tab1:
                 # Fallback to original method
                 force_plot = explain_prediction(
                     model,
@@ -375,40 +361,51 @@ def main():
                     feature_names,
                     plot_type='force'
                 )
+                print("force_plot2: ", force_plot)
                 st.pyplot(force_plot)
             
             with tab2:
                 st.subheader("SHAP Waterfall Plot")
+
+                # Create a new figure explicitly
+                fig = plt.figure(figsize=(10, 6))
+
+                # Generate the waterfall plot
                 waterfall_plot = explain_prediction(
                     model,
                     transaction_values,
                     feature_names,
                     plot_type='waterfall'
                 )
-                st.pyplot(waterfall_plot)
+
+                # Display in Streamlit - pass the figure object
+                st.pyplot(fig)
+
+                # Clear the figure to prevent memory issues
+                plt.close(fig)
             
-            with tab3:
-                st.subheader("SHAP Summary Plot")
-                summary_plot = plot_shap_summary(
-                    model,
-                    df_processed.drop('fraud', axis=1).values,
-                    feature_names
-                )
-                st.pyplot(summary_plot)
+            # with tab3:
+            #     st.subheader("SHAP Summary Plot")
+            #     summary_plot = plot_shap_summary(
+            #         model,
+            #         df_processed.drop('fraud', axis=1).values,
+            #         feature_names
+            #     )
+            #     st.pyplot(summary_plot)
             
-            with tab4:
-                st.subheader("SHAP Dependence Plot")
-                selected_feature = st.selectbox(
-                    "Select feature for dependence plot",
-                    options=feature_names
-                )
-                dependence_plot = plot_shap_dependence(
-                    model,
-                    df_processed.drop('fraud', axis=1).values,
-                    feature_names,
-                    feature_names.index(selected_feature)
-                )
-                st.pyplot(dependence_plot)
+            # with tab4:
+            #     st.subheader("SHAP Dependence Plot")
+            #     selected_feature = st.selectbox(
+            #         "Select feature for dependence plot",
+            #         options=feature_names
+            #     )
+            #     dependence_plot = plot_shap_dependence(
+            #         model,
+            #         df_processed.drop('fraud', axis=1).values,
+            #         feature_names,
+            #         feature_names.index(selected_feature)
+            #     )
+            #     st.pyplot(dependence_plot)
         
         else:  # LIME visualization
             st.subheader("LIME Explanation")

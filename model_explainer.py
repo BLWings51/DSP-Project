@@ -16,22 +16,18 @@ _explainer_cache = {}
 def get_explainer(model, background_data=None):
     """Get or create a cached explainer for the model."""
     model_id = id(model)
-    print("model_id: ", model_id)
     
     # First, try to load from memory cache
     if model_id in _explainer_cache:
-        print("model_id in _explainer_cache: ", model_id)
         return _explainer_cache[model_id]
     
     # Then, try to load from disk cache
     try:
         cache_path = os.path.join('models', 'explainers_cache.pkl')
-        print("cache_path: ", cache_path)
         if os.path.exists(cache_path):
             with open(cache_path, 'rb') as f:
                 disk_cache = pickle.load(f)
-                print("disk_cache: ", disk_cache)
-
+                
                 # Determine model type
                 if isinstance(model, RandomForestClassifier):
                     model_type = 'random_forest'
@@ -84,8 +80,8 @@ def explain_prediction(model, transaction, feature_names, background_data=None, 
         
     Returns:
     --------
-    matplotlib.figure.Figure or str
-        SHAP explanation plot or HTML content
+    str
+        HTML content for the SHAP explanation plot
     """
     try:
         # Ensure transaction is in the correct format
@@ -110,9 +106,6 @@ def explain_prediction(model, transaction, feature_names, background_data=None, 
                 if isinstance(expected_value, (list, np.ndarray)):
                     expected_value = expected_value[0]
 
-        print("shap_values: ", shap_values)
-        
-        
         if plot_type == 'force':
             # Ensure shap_values is 2D (n_samples, n_features)
             if len(shap_values.shape) == 1:
@@ -129,8 +122,8 @@ def explain_prediction(model, transaction, feature_names, background_data=None, 
                     matplotlib=False,
                     show=False
                 )
+                
             else:
-                plt.figure(figsize=(10, 4))
                 
                 arr_reshaped = np.squeeze(shap_values, axis=0)
                 print("arr_reshaped: ", arr_reshaped)
@@ -138,26 +131,32 @@ def explain_prediction(model, transaction, feature_names, background_data=None, 
                 print("feature_names: ", feature_names)
 
                 # testArr = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+
+                force_plot = shap.plots.force(
+                    expected_value,
+                    arr_reshaped[:,0],
+                    transaction[0],
+                    feature_names=feature_names,
+                    matplotlib=True,
+                    show=False
+                )
+                print("force_plot1: ", force_plot)
+
+                return force_plot
             
                 # Generate the force plot as HTML
-                force_plot = shap.force_plot(
-                    expected_value,
-                    arr_reshaped[:,0],  # First sample's SHAP values
-                    transaction[0],  # First sample's feature values
-                    feature_names=feature_names,
-                    matplotlib=False
-                )
+                # force_plot = shap.force_plot(
+                #     expected_value,
+                #     arr_reshaped[:,0],  # First sample's SHAP values
+                #     transaction[0],  # First sample's feature values
+                #     feature_names=feature_names,
+                #     matplotlib=False
+                # )
                 
-                # Convert to HTML and display in Streamlit
-                fig = plt.gcf()
-                fig.set_size_inches(10, 4)
-                plt.tight_layout()
-                return fig
+                # return force_plot
             
         elif plot_type == 'waterfall':
-            # Create figure for waterfall plot
-            fig = plt.figure(figsize=(10, 6))
-            
+            # Create waterfall plot
             if len(shap_values.shape) == 3:
                 values = shap_values[0, :, 0]
             elif len(shap_values.shape) == 2:
@@ -171,13 +170,14 @@ def explain_prediction(model, transaction, feature_names, background_data=None, 
                 data=transaction[0],
                 feature_names=feature_names
             )
-            # shap.plots.waterfall(explanation)
-            return fig
+            
+            
+            # Generate waterfall plot as HTML
+            waterfall_plot = shap.plots.waterfall(explanation, show=False)
+            return waterfall_plot
             
         elif plot_type == 'bar':
-            # Create figure for bar plot
-            fig = plt.figure(figsize=(10, 6))
-            
+            # Create bar plot
             if len(shap_values.shape) == 3:
                 values = shap_values[0, :, 0]
             elif len(shap_values.shape) == 2:
@@ -191,8 +191,10 @@ def explain_prediction(model, transaction, feature_names, background_data=None, 
                 data=transaction[0],
                 feature_names=feature_names
             )
-            # shap.plots.bar(explanation)
-            return fig
+            
+            # Generate bar plot as HTML
+            bar_plot = shap.plots.bar(explanation, show=False)
+            return bar_plot
         else:
             raise ValueError(f"Unsupported plot type: {plot_type}")
         
@@ -216,30 +218,28 @@ def explain_model(model, X, feature_names, background_data=None):
         
     Returns:
     --------
-    matplotlib.figure.Figure
-        SHAP summary plot
+    str
+        HTML content for the SHAP summary plot
     """
     try:
         # Get or create explainer
         explainer = get_explainer(model, background_data)
-        print("explainer: ", explainer)
         
         # Calculate SHAP values with progress indicator
-        shap_values = explainer.shap_values(X)
-        print("shap_values: ", shap_values)
+        with st.spinner('Calculating SHAP values for summary plot...'):
+            shap_values = explainer.shap_values(X)
 
-        # Create summary plot
-        plt.figure(figsize=(10, 6))
-        shap.summary_plot(
-            shap_values[1],  # SHAP values for class 1 (fraud)
-            X,
-            feature_names=feature_names,
-            show=False
-        )
-        plt.title('SHAP Summary Plot for Fraud Predictions')
-        plt.tight_layout()
-        
-        return plt.gcf()
+            feature_names = np.array(feature_names)
+            
+            # Create summary plot as HTML
+            summary_plot = shap.summary_plot(
+                shap_values,  # SHAP values for class 1 (fraud)
+                X,
+                feature_names=feature_names,
+                show=False,
+                plot_size=(20, 10)
+            )
+            return summary_plot
             
     except Exception as e:
         raise Exception(f"An error occurred while generating SHAP summary: {str(e)}")
@@ -356,8 +356,6 @@ if __name__ == "__main__":
         plot_type='force'
     )
     print("force_plot: ", force_plot)
-    force_plot.savefig('force_plot.png')
-    plt.close()
     
     # Generate waterfall plot
     waterfall_plot = explain_prediction(
@@ -367,8 +365,6 @@ if __name__ == "__main__":
         plot_type='waterfall'
     )
     print("waterfall_plot: ", waterfall_plot)
-    waterfall_plot.savefig('waterfall_plot.png')
-    plt.close()
     
     # Generate global explanation
     summary_plot = explain_model(
@@ -377,26 +373,24 @@ if __name__ == "__main__":
         feature_names
     )
     print("summary_plot: ", summary_plot)
-    summary_plot.savefig('summary_plot.png')
-    plt.close()
     
-    # # Explain a single transaction with LIME
-    # lime_explanation = explain_with_lime(
-    #     rf_model,
-    #     transaction,
-    #     feature_names,
-    #     num_features=10,
-    #     num_samples=5000
-    # )
-    # print("lime_explanation: ", lime_explanation)
-    # # Plot and save LIME explanation
-    # plot_lime_explanation(lime_explanation, 'lime_explanation.png')
+    # Explain a single transaction with LIME
+    lime_explanation = explain_with_lime(
+        rf_model,
+        transaction,
+        feature_names,
+        num_features=10,
+        num_samples=5000
+    )
+    print("lime_explanation: ", lime_explanation)
+    # Plot and save LIME explanation
+    plot_lime_explanation(lime_explanation, 'lime_explanation.png')
     
-    # # Print explanation in text format
-    # print("\nLIME Explanation:")
-    # print(lime_explanation.as_list())
+    # Print explanation in text format
+    print("\nLIME Explanation:")
+    print(lime_explanation.as_list())
     
-    # # Print prediction probabilities
-    # print("\nPrediction Probabilities:")
-    # print(f"Not Fraud: {lime_explanation.predict_proba[0]:.4f}")
-    # print(f"Fraud: {lime_explanation.predict_proba[1]:.4f}") 
+    # Print prediction probabilities
+    print("\nPrediction Probabilities:")
+    print(f"Not Fraud: {lime_explanation.predict_proba[0]:.4f}")
+    print(f"Fraud: {lime_explanation.predict_proba[1]:.4f}") 
