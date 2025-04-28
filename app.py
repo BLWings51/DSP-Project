@@ -6,6 +6,7 @@ from tensorflow.keras.models import load_model
 import shap
 from lime import lime_tabular
 import matplotlib.pyplot as plt
+from preload_explainers import preload_explainers, load_background_data, PredictProbaWrapper, EnsembleProbaWrapper, preprocess_single_transaction
 from data_loader import load_transaction_data, preprocess_data, KerasBinaryClassifier, VotingClassifier
 from model_explainer import explain_prediction, explain_with_lime, plot_lime_explanation, explain_model
 import os
@@ -262,170 +263,111 @@ def load_models():
 def main():
     st.title("💰 Fraud Detection System")
     
-    # Add model verification button
+    # Sidebar for verification or transaction input
     if st.sidebar.button("Verify Model Loading"):
         verify_model_loading()
         return
-    
-    # Sidebar for model and visualization selection
-    st.sidebar.header("Model and Visualization Settings")
-    
-    # Model selection
-    model_type = st.sidebar.selectbox(
+
+    # Model & visualization selectors
+    st.sidebar.header("Settings")
+    model_name = st.sidebar.selectbox(
         "Select Model",
         options=["Random Forest", "Neural Network", "Ensemble"]
     )
-    
-    # Visualization selection
-    visualization_type = st.sidebar.selectbox(
-        "Select Visualization Tool",
+    viz = st.sidebar.selectbox(
+        "Select Explanation Method",
         options=["SHAP", "LIME"]
     )
-    
+
     # Load data
     df_processed, feature_names, column_mapping = load_and_preprocess_data()
     if df_processed is None:
-        st.error("Failed to load data. Please check the data file.")
         return
-    
-    # Load models and explainers
+
+    # Load models & explainers
     ensemble_model, nn_model, rf_model, explainers = load_models()
     if None in [ensemble_model, nn_model, rf_model]:
-        st.error("Failed to load models. Please check the model files.")
         return
-    
-    # Create a dictionary of models
+
     models = {
         "Random Forest": rf_model,
         "Neural Network": nn_model,
         "Ensemble": ensemble_model
     }
+    model = models[model_name]
+    expl_key = model_name.lower().replace(" ", "_")
     
-    # Select the appropriate model
-    model = models[model_type]
-    
-    # Create transaction input
+    # Build transaction input
     transaction_df = create_transaction_input(df_processed, column_mapping)
-    
-    # Display transaction details
     st.subheader("Transaction Details")
     st.dataframe(transaction_df)
-    
-    # Make prediction
-    if st.button("Predict"):
-        # Preprocess transaction
-        transaction_values = transaction_df.values
-        
-        # Debug: Print transaction values
-        st.write("Transaction values:", transaction_values)
-        
-        # Get prediction and probability based on model type
-        if model_type == "Neural Network":
-            # Neural Network returns a single probability
-            probability = float(model.predict(transaction_values, verbose=0)[0])
-            prediction = 1 if probability > 0.5 else 0
-            fraud_probability = probability
-            legitimate_probability = 1 - probability
-        else:
-            # Random Forest and Ensemble return probability array
-            prediction = model.predict(transaction_values)[0]
-            probabilities = model.predict_proba(transaction_values)[0]
-            fraud_probability = float(probabilities[1])
-            legitimate_probability = float(probabilities[0])
-        
-        # Display prediction
-        st.subheader("Prediction")
-        if prediction == 1:
-            st.error(f"⚠️ Fraudulent Transaction (Probability: {fraud_probability:.4f})")
-        else:
-            st.success(f"✅ Legitimate Transaction (Probability: {legitimate_probability:.4f})")
-        
-        # Display model information
-        st.subheader(f"Model: {model_type}")
-        st.write(f"Using {visualization_type} for explanation")
-        
-        if visualization_type == "SHAP":
-            # Create tabs for different SHAP explanations
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "Force Plot", 
-                "Waterfall Plot", 
-                "Summary Plot",
-                "Dependence Plot"
-            ])
-            
-            with tab1:
-                # Fallback to original method
-                force_plot = explain_prediction(
-                    model,
-                    transaction_values,
-                    feature_names,
-                    plot_type='force'
-                )
-                print("force_plot2: ", force_plot)
-                st.pyplot(force_plot)
-            
-            with tab2:
-                st.subheader("SHAP Waterfall Plot")
 
-                # Create a new figure explicitly
-                fig = plt.figure(figsize=(10, 6))
+    if not st.button("Predict & Explain"):
+        return
 
-                # Generate the waterfall plot
-                waterfall_plot = explain_prediction(
-                    model,
-                    transaction_values,
-                    feature_names,
-                    plot_type='waterfall'
-                )
+    # Preprocess & predict
+    X = preprocess_single_transaction(transaction_df.iloc[0].to_dict(), column_mapping)
+    X = X.reshape(1, -1)
+    st.write("Features:", X)
 
-                # Display in Streamlit - pass the figure object
-                st.pyplot(fig)
+    if model_name == "Neural Network":
+        prob = float(model.predict(X)[0])
+        pred = int(prob > 0.5)
+        probs = [1 - prob, prob]
+    else:
+        probs = model.predict_proba(X)[0]
+        pred = int(model.predict(X)[0])
 
-                # Clear the figure to prevent memory issues
-                plt.close(fig)
-            
-            # with tab3:
-            #     st.subheader("SHAP Summary Plot")
-            #     summary_plot = plot_shap_summary(
-            #         model,
-            #         df_processed.drop('fraud', axis=1).values,
-            #         feature_names
-            #     )
-            #     st.pyplot(summary_plot)
-            
-            # with tab4:
-            #     st.subheader("SHAP Dependence Plot")
-            #     selected_feature = st.selectbox(
-            #         "Select feature for dependence plot",
-            #         options=feature_names
-            #     )
-            #     dependence_plot = plot_shap_dependence(
-            #         model,
-            #         df_processed.drop('fraud', axis=1).values,
-            #         feature_names,
-            #         feature_names.index(selected_feature)
-            #     )
-            #     st.pyplot(dependence_plot)
-        
-        else:  # LIME visualization
-            st.subheader("LIME Explanation")
-            lime_explanation = explain_with_lime(
-                model,
-                transaction_values,
-                feature_names
+    if pred == 1:
+        st.error(f"⚠️ Fraud (P={probs[1]:.3f})")
+    else:
+        st.success(f"✅ Legitimate (P={probs[0]:.3f})")
+
+    st.subheader(f"Explanation ({viz})")
+
+    if viz == "SHAP":
+        tab1, tab2, tab3, tab4 = st.tabs(
+            ["Force Plot", "Waterfall Plot", "Bar Plot", "Dependence Plot"]
+        )
+
+        with tab1:
+            fig = explain_prediction(
+                expl_key, X, feature_names, explainers, plot_type="force"
             )
-            
-            # Create a figure for LIME plot
-            fig, ax = plt.subplots(figsize=(10, 6))
-            lime_explanation.as_pyplot_figure()
-            plt.title('LIME Explanation for Transaction Prediction')
-            plt.tight_layout()
             st.pyplot(fig)
-            
-            # Display LIME explanation details
-            st.write("Feature Contributions:")
-            for feature, weight in lime_explanation.as_list():
-                st.write(f"{feature}: {weight:.4f}")
+
+        with tab2:
+            fig = explain_prediction(
+                expl_key, X, feature_names, explainers, plot_type="waterfall"
+            )
+            st.pyplot(fig)
+
+        with tab3:
+            fig = explain_prediction(
+                expl_key, X, feature_names, explainers, plot_type="bar"
+            )
+            st.pyplot(fig)
+
+        # with tab4:
+        #     feature = st.selectbox("Feature for dependence", feature_names)
+        #     fig = explain_model(
+        #         models[model_name],
+        #         df_processed.drop("fraud", axis=1).values,
+        #         feature_names,
+        #         plot_type="dependence",
+        #         dependence_feature=feature
+        #     )
+        #     st.pyplot(fig)
+
+    # else:  # LIME
+    #     lime_exp = explain_with_lime(
+    #         model, X, feature_names
+    #     )
+    #     fig, ax = plt.subplots(figsize=(8, 6))
+    #     lime_exp.as_pyplot_figure()
+    #     # st.pyplot(fig)
+    #     st.write(lime_exp.as_list())
+
 
 if __name__ == "__main__":
     main() 

@@ -9,192 +9,185 @@ import lime
 import streamlit as st
 import os
 import pickle
+from preload_explainers import preload_explainers, load_background_data
+from utils import load_column_mapping, preprocess_single_transaction, load_model_from_disk
 
 # Cache for explainers
 _explainer_cache = {}
 
 def get_explainer(model, background_data=None):
-    """Get or create a cached explainer for the model."""
-    model_id = id(model)
-    
-    # First, try to load from memory cache
-    if model_id in _explainer_cache:
-        return _explainer_cache[model_id]
-    
-    # Then, try to load from disk cache
-    try:
-        cache_path = os.path.join('models', 'explainers_cache.pkl')
-        if os.path.exists(cache_path):
-            with open(cache_path, 'rb') as f:
-                disk_cache = pickle.load(f)
-                
-                # Determine model type
-                if isinstance(model, RandomForestClassifier):
-                    model_type = 'random_forest'
-                elif hasattr(model, 'predict') and not hasattr(model, 'predict_proba'):
-                    model_type = 'neural_network'
-                else:
-                    model_type = 'ensemble'
-                
-                if model_type in disk_cache:
-                    explainer = disk_cache[model_type]
-                    _explainer_cache[model_id] = explainer
-                    return explainer
-    except Exception as e:
-        st.warning(f"Could not load cached explainer: {str(e)}")
-    
-    # If no cache available, create new explainer with progress indicator
-    with st.spinner('Creating SHAP explainer... This may take a few minutes.'):
-        if hasattr(model, 'predict_proba') and not isinstance(model, VotingClassifier):
-            # For scikit-learn models (except ensemble)
-            explainer = shap.TreeExplainer(model)
-        else:
-            # For Keras models and ensemble
-            if background_data is None:
-                background_data = shap.utils.sample(np.zeros((1, model.n_features_in_)), 100)
-            explainer = shap.KernelExplainer(
-                model.predict_proba,
-                background_data,
-                output_names=['Not Fraud', 'Fraud']
-            )
-        _explainer_cache[model_id] = explainer
-    
-    return _explainer_cache[model_id]
-
-def explain_prediction(model, transaction, feature_names, background_data=None, plot_type='force'):
     """
-    Generate SHAP explanation for a single transaction prediction.
+    Return a cached SHAP explainer:
+      - RandomForestClassifier → TreeExplainer
+      - all other models       → KernelExplainer
+    """
+    mid = id(model)
+    if mid in _explainer_cache:
+        return _explainer_cache[mid]
+
+    if background_data is None:
+        # 100 samples, trimmed to your model’s feature count
+        background_data = load_background_data(100, getattr(model, 'n_features_in_', None))
+
+    if isinstance(model, RandomForestClassifier):
+        expl = shap.TreeExplainer(model)
+    else:
+        predict_fn = getattr(model, 'predict_proba', model)
+        expl = shap.KernelExplainer(
+            predict_fn,
+            background_data,
+            output_names=['Not Fraud','Fraud']
+        )
+
+    _explainer_cache[mid] = expl
+    return expl
+
+def explain_prediction(model_name, transaction, feature_names, explainers, plot_type='force'):
+    """
+    Generate SHAP explanation for a single transaction prediction using pre-built explainers.
     
     Parameters:
     -----------
-    model : object
-        Trained model to explain
+    model_name : str
+        Name of the model ('random_forest', 'neural_network', or 'ensemble')
     transaction : numpy.ndarray or pandas.Series
         Single transaction to explain
     feature_names : list
         Names of the features
-    background_data : numpy.ndarray, optional
-        Background data for SHAP. If None, will use 100 samples from the training data
+    explainers : dict
+        Dictionary of pre-built explainers loaded from cache
     plot_type : str, optional
         Type of SHAP plot to generate ('force', 'waterfall', or 'bar'). Defaults to 'force'
         
     Returns:
     --------
-    str
-        HTML content for the SHAP explanation plot
+    matplotlib.figure.Figure
+        The SHAP explanation plot
     """
     try:
         # Ensure transaction is in the correct format
         if isinstance(transaction, pd.Series):
-            transaction = transaction.values.reshape(1, -1)
-        elif len(transaction.shape) == 1:
-            transaction = transaction.reshape(1, -1)
+            transaction = transaction.values
+        elif isinstance(transaction, np.ndarray):
+            if len(transaction.shape) == 1:
+                transaction = transaction.reshape(1, -1)
+        else:
+            raise ValueError("Transaction must be a pandas Series or numpy array")
             
-        # Get or create explainer
-        explainer = get_explainer(model, background_data)
+        # Get the pre-built explainer
+        explainer = explainers[model_name]
         
-        # Calculate SHAP values with progress indicator
-        with st.spinner('Calculating SHAP values...'):
-            shap_values = explainer.shap_values(transaction)
+        # Get SHAP values - ensure we pass a 2D array
+        print("Transaction shape:", transaction.shape)
+        shap_values = explainer(transaction)
+        
+        # Extract values and expected value based on explainer type
+        if hasattr(shap_values, "values"):
+            # For ExactExplainer
+            vals = shap_values.values
+            expected_value = shap_values.base_values
+        else:
+            # For TreeExplainer or KernelExplainer
+            vals = shap_values
             expected_value = explainer.expected_value
-            
-            if isinstance(shap_values, list):
-                shap_values = shap_values[1]  # Class 1 (fraud)
-                if isinstance(expected_value, (list, np.ndarray)):
-                    expected_value = expected_value[1]
+        
+        # Debug printing
+        print(f"Model: {model_name}")
+        print(f"SHAP values shape: {vals.shape if hasattr(vals, 'shape') else 'list'}")
+        print(f"SHAP values: {vals}")
+        
+        # Get the positive class values
+        if model_name == 'random_forest':
+            # TreeExplainer for RF
+            if isinstance(vals, list):
+                # If vals is a list, it contains values for each class
+                single_output = np.array(vals[1]).reshape(1, -1)  # Reshape to 2D array
+            elif len(vals.shape) > 1:
+                if vals.shape[-1] > 1:  # Multiple classes
+                    single_output = vals[..., 1].reshape(1, -1)  # Reshape to 2D array
+                else:
+                    single_output = vals.reshape(1, -1)  # Reshape to 2D array
             else:
-                if isinstance(expected_value, (list, np.ndarray)):
-                    expected_value = expected_value[0]
+                single_output = vals.reshape(1, -1)  # Reshape to 2D array
+        else:
+            # Kernel or Permutation or high-level
+            if isinstance(vals, list):
+                single_output = np.array(vals[1]).reshape(1, -1)  # Reshape to 2D array
+            elif len(vals.shape) > 1:
+                single_output = vals[..., 1].reshape(1, -1)  # Reshape to 2D array
+            else:
+                single_output = vals.reshape(1, -1)  # Reshape to 2D array
+        
+        # Debug printing
+        print(f"Single output shape: {single_output.shape}")
+        print(f"Single output: {single_output}")
+        
+        # Get the expected value for the positive class
+        if hasattr(expected_value, "__len__"):
+            if len(expected_value) > 1:
+                expected_value = np.array([expected_value[1]])  # Convert to 1D array
+            else:
+                expected_value = np.array([expected_value[0]])  # Convert to 1D array
+        else:
+            expected_value = np.array([expected_value])  # Convert scalar to 1D array
+        
+        # Debug printing
+        print(f"Expected value shape: {expected_value.shape}")
+        print(f"Expected value: {expected_value}")
 
+        # Flatten arrays to 1D
+        sv = single_output.flatten()  # SHAP values for each feature
+        bv = expected_value.flatten()[0]  # Base value (scalar)
+        feat_vals = transaction.reshape(-1)  # Feature values
+        
         if plot_type == 'force':
-            # Ensure shap_values is 2D (n_samples, n_features)
-            if len(shap_values.shape) == 1:
-                shap_values = shap_values.reshape(1, -1)
-            
-            # Check if we have multiple samples
-            if len(shap_values.shape) > 1 and shap_values.shape[0] > 1:
-                # For multiple samples, use the older SHAP API
-                shap.force_plot(
-                    expected_value,
-                    shap_values,
-                    transaction,
-                    feature_names=feature_names,
-                    matplotlib=False,
-                    show=False
-                )
-                
-            else:
-                
-                arr_reshaped = np.squeeze(shap_values, axis=0)
-                print("arr_reshaped: ", arr_reshaped)
-                print("arr_reshaped[:,0]: ", arr_reshaped[:,0])
-                print("feature_names: ", feature_names)
-
-                # testArr = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
-
-                force_plot = shap.plots.force(
-                    expected_value,
-                    arr_reshaped[:,0],
-                    transaction[0],
-                    feature_names=feature_names,
-                    matplotlib=True,
-                    show=False
-                )
-                print("force_plot1: ", force_plot)
-
-                return force_plot
-            
-                # Generate the force plot as HTML
-                # force_plot = shap.force_plot(
-                #     expected_value,
-                #     arr_reshaped[:,0],  # First sample's SHAP values
-                #     transaction[0],  # First sample's feature values
-                #     feature_names=feature_names,
-                #     matplotlib=False
-                # )
-                
-                # return force_plot
+            # Create force plot using new SHAP v0.20 API
+            force_plot = shap.plots.force(
+                bv,  # Base value
+                sv,  # SHAP values
+                feature_names=feature_names,
+                features=feat_vals,
+                show=False,
+                matplotlib=True
+            )
+            return force_plot
             
         elif plot_type == 'waterfall':
-            # Create waterfall plot
-            if len(shap_values.shape) == 3:
-                values = shap_values[0, :, 0]
-            elif len(shap_values.shape) == 2:
-                values = shap_values[0]
-            else:
-                values = shap_values
-                
+            # build correct Explanation
             explanation = shap.Explanation(
-                values=values,
-                base_values=expected_value,
-                data=transaction[0],
+                values=sv,
+                base_values=bv,
+                data=feat_vals,
                 feature_names=feature_names
             )
-            
-            
-            # Generate waterfall plot as HTML
-            waterfall_plot = shap.plots.waterfall(explanation, show=False)
-            return waterfall_plot
+            plt.figure(figsize=(8, 6))
+            shap.plots.waterfall(
+                explanation,
+                max_display=len(sv),    # show all features without tick errors
+                show=False
+            )
+            fig = plt.gcf()
+            plt.tight_layout()
+            return fig
+
             
         elif plot_type == 'bar':
             # Create bar plot
-            if len(shap_values.shape) == 3:
-                values = shap_values[0, :, 0]
-            elif len(shap_values.shape) == 2:
-                values = shap_values[0]
-            else:
-                values = shap_values
-                
             explanation = shap.Explanation(
-                values=values,
-                base_values=expected_value,
-                data=transaction[0],
+                values=sv,
+                base_values=bv,
+                data=feat_vals,
                 feature_names=feature_names
             )
-            
-            # Generate bar plot as HTML
-            bar_plot = shap.plots.bar(explanation, show=False)
-            return bar_plot
+            plt.figure(figsize=(8, 6))
+            shap.plots.bar(
+                explanation,
+                max_display=len(sv),    # show all features without tick errors
+                show=False
+            )
+            fig = plt.gcf()
+            plt.tight_layout()
+            return fig
         else:
             raise ValueError(f"Unsupported plot type: {plot_type}")
         
@@ -330,67 +323,94 @@ def plot_lime_explanation(explanation, save_path=None):
     except Exception as e:
         raise Exception(f"An error occurred while plotting LIME explanation: {str(e)}")
 
+def load_models_from_cache(cache_path='models/explainers_cache.pkl'):
+    """
+    Load models from the explainers cache file.
+    
+    Parameters:
+    -----------
+    cache_path : str, optional
+        Path to the explainers cache file. Defaults to 'models/explainers_cache.pkl'
+        
+    Returns:
+    --------
+    tuple
+        (rf_model, nn_model, ensemble_model) - The loaded models
+    """
+    try:
+        if not os.path.exists(cache_path):
+            raise FileNotFoundError(f"Cache file not found at {cache_path}")
+            
+        with open(cache_path, 'rb') as f:
+            explainers = pickle.load(f)
+            
+        # Extract models from explainers
+        rf_model = explainers['random_forest'].model
+        nn_model = explainers['neural_network'].model
+        ensemble_model = explainers['ensemble'].model
+        
+        return rf_model, nn_model, ensemble_model
+        
+    except Exception as e:
+        raise Exception(f"Error loading models from cache: {str(e)}")
+
 # Example usage
 if __name__ == "__main__":
-    from data_loader import load_transaction_data, preprocess_data, split_data, train_random_forest
-    
-    # Load and preprocess data
-    df = load_transaction_data()
-    df_processed, column_mapping = preprocess_data(df)
-    
-    # Split the data
-    X_train, X_test, y_train, y_test = split_data(df_processed)
-    
-    # Train a Random Forest model
-    rf_model = train_random_forest(X_train.values, y_train.values)
-    
-    # Explain a single transaction
-    transaction = X_test.values[0]  # First test transaction
-    feature_names = [col for col in X_test.columns if col != 'fraud']
-    
-    # Generate force plot
-    force_plot = explain_prediction(
-        rf_model,
-        transaction,
-        feature_names,
-        plot_type='force'
-    )
-    print("force_plot: ", force_plot)
-    
-    # Generate waterfall plot
-    waterfall_plot = explain_prediction(
-        rf_model,
-        transaction,
-        feature_names,
-        plot_type='waterfall'
-    )
-    print("waterfall_plot: ", waterfall_plot)
-    
-    # Generate global explanation
-    summary_plot = explain_model(
-        rf_model,
-        X_test.values,
-        feature_names
-    )
-    print("summary_plot: ", summary_plot)
-    
-    # Explain a single transaction with LIME
-    lime_explanation = explain_with_lime(
-        rf_model,
-        transaction,
-        feature_names,
-        num_features=10,
-        num_samples=5000
-    )
-    print("lime_explanation: ", lime_explanation)
-    # Plot and save LIME explanation
-    plot_lime_explanation(lime_explanation, 'lime_explanation.png')
-    
-    # Print explanation in text format
-    print("\nLIME Explanation:")
-    print(lime_explanation.as_list())
-    
-    # Print prediction probabilities
-    print("\nPrediction Probabilities:")
-    print(f"Not Fraud: {lime_explanation.predict_proba[0]:.4f}")
-    print(f"Fraud: {lime_explanation.predict_proba[1]:.4f}") 
+    try:
+        # Load pre-built explainers
+        models_dir = 'models'
+        with open(os.path.join(models_dir, 'explainers_cache.pkl'), 'rb') as f:
+            explainers = pickle.load(f)
+        
+        # Example usage with a sample transaction
+        sample_transaction = {
+            'step': 1,
+            'customer': 1,
+            'age': 35,
+            'gender': 1,
+            'zipcodeOri': 0,
+            'merchant': 1,
+            'zipMerchant': 0,
+            'category': 1,
+            'amount': 1
+        }
+        
+        # Load the column mapping
+        column_mapping = load_column_mapping()
+        print("Column mapping loaded successfully!")
+        
+        # Preprocess the transaction using the loaded mapping
+        processed_transaction = preprocess_single_transaction(sample_transaction, column_mapping)
+        
+        # Create feature names
+        feature_names = list(sample_transaction.keys())
+        
+        # Display explanations for each model
+        model_names = {
+            'Random Forest': 'random_forest',
+            'Neural Network': 'neural_network',
+            'Ensemble': 'ensemble'
+        }
+        
+        for display_name, model_name in model_names.items():
+            print(f"\nGenerating SHAP explanation for {display_name}...")
+            try:
+                explanation = explain_prediction(
+                    model_name,
+                    processed_transaction,
+                    feature_names,
+                    explainers
+                )
+                print("explanation: ", explanation)
+                print("type of explanation: ", type(explanation))
+                print("len of explanation: ", len(explanation))
+                print("explanation.values: ", explanation.values)
+                print("explanation.base_values: ", explanation.base_values)
+                print("explanation.data: ", explanation.data)
+                print("explanation.feature_names: ", explanation.feature_names)
+                print("Explanation generated successfully!")
+            except Exception as e:
+                print(f"Error generating explanation for {display_name}: {str(e)}")
+                
+    except Exception as e:
+        print(f"Error: {str(e)}")

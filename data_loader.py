@@ -12,6 +12,8 @@ from tensorflow.keras.callbacks import EarlyStopping
 # from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
 import joblib
 import os
+import pickle
+from utils import save_column_mapping, save_model, load_model_from_disk
 
 def load_transaction_data(file_path='banksimData.csv'):
     """
@@ -231,61 +233,58 @@ def evaluate_model(model, X_test, y_test):
     dict
         Dictionary containing the evaluation metrics
     """
-    try:
-        # Make predictions based on model type
-        if hasattr(model, 'predict_proba'):
-            # For scikit-learn models and ensemble
-            y_pred_proba = model.predict_proba(X_test)
-            y_pred = model.predict(X_test)
-            
-            # For binary classification, get probabilities for positive class
-            if y_pred_proba.shape[1] == 2:
-                y_pred_proba = y_pred_proba[:, 1]
+    # Make predictions based on model type
+    if hasattr(model, 'predict_proba'):
+        # For scikit-learn models and ensemble
+        y_pred_proba = model.predict_proba(X_test)
+        y_pred = model.predict(X_test)
+        
+        # For binary classification, get probabilities for positive class
+        if y_pred_proba.shape[1] == 2:
+            y_pred_proba = y_pred_proba[:, 1]
+    else:
+        # For Keras models
+        y_pred_proba = model.predict(X_test, verbose=0)
+        
+        # Handle both single-output and multi-output models
+        if len(y_pred_proba.shape) == 1:
+            # Single output (binary classification)
+            y_pred = (y_pred_proba > 0.5).astype(int)
         else:
-            # For Keras models
-            y_pred_proba = model.predict(X_test, verbose=0)
-            
-            # Handle both single-output and multi-output models
-            if len(y_pred_proba.shape) == 1:
-                # Single output (binary classification)
-                y_pred = (y_pred_proba > 0.5).astype(int)
-            else:
-                # Multi-output (multi-class classification)
-                y_pred = np.argmax(y_pred_proba, axis=1)
-                y_pred_proba = y_pred_proba[:, 1] if y_pred_proba.shape[1] > 1 else y_pred_proba.flatten()
-        
-        # Ensure predictions are in the correct shape
-        y_pred = y_pred.flatten()
-        
-        # Calculate metrics
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred)
-        recall = recall_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred)
-        
-        # Print metrics
-        print("\nModel Evaluation Metrics:")
-        print(f"Accuracy: {accuracy:.4f}")
-        print(f"Precision: {precision:.4f}")
-        print(f"Recall: {recall:.4f}")
-        print(f"F1-Score: {f1:.4f}")
-        
-        # Print detailed classification report
-        print("\nDetailed Classification Report:")
-        print(classification_report(y_test, y_pred))
-        
-        # Return metrics as dictionary
-        metrics = {
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1_score': f1
-        }
-        
-        return metrics
-        
-    except Exception as e:
-        raise Exception(f"An error occurred while evaluating the model: {str(e)}")
+            # Multi-output (multi-class classification)
+            y_pred = np.argmax(y_pred_proba, axis=1)
+            y_pred_proba = y_pred_proba[:, 1] if y_pred_proba.shape[1] > 1 else y_pred_proba.flatten()
+    
+    # Ensure predictions are in the correct shape
+    y_pred = y_pred.flatten()
+    y_test = y_test.flatten()
+    
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    
+    # Print metrics
+    print("\nModel Evaluation Metrics:")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1-Score: {f1:.4f}")
+    
+    # Print detailed classification report
+    print("\nDetailed Classification Report:")
+    print(classification_report(y_test, y_pred))
+    
+    # Return metrics as dictionary
+    metrics = {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1
+    }
+    
+    return metrics
 
 def train_neural_network(X_train, y_train, X_val=None, y_val=None, 
                         hidden_units=[64, 32], dropout_rate=0.3,
@@ -382,20 +381,38 @@ class KerasBinaryClassifier(BaseEstimator, ClassifierMixin):
     
     def __init__(self, model=None, n_features=None):
         self.model = model
-        self._n_features_in = n_features  # Initialize with provided features
+        self.n_features = n_features  # Changed from _n_features_in to n_features
+        self._n_features_in = n_features  # Keep this for scikit-learn compatibility
         
     def fit(self, X, y=None):
         """Dummy fit method that just records feature count."""
         self._n_features_in = X.shape[1]
+        self.n_features = X.shape[1]  # Update both attributes
         return self  # Always return self
         
     def predict_proba(self, X):
         if self.model is None:
             raise ValueError("Model not initialized")
-        return self.model.predict(X)
+        # Get raw predictions and ensure they're 1D
+        p = self.model.predict(X, verbose=0).reshape(-1)
+        # Stack the "not fraud" and "fraud" columns
+        return np.column_stack([1 - p, p])
         
     def predict(self, X):
-        return (self.predict_proba(X) > 0.5).astype(int)
+        return (self.predict_proba(X)[:, 1] > 0.5).astype(int)
+    
+    def get_params(self, deep=True):
+        """Get parameters for this estimator."""
+        return {
+            'model': self.model,
+            'n_features': self.n_features
+        }
+    
+    def set_params(self, **parameters):
+        """Set the parameters of this estimator."""
+        for parameter, value in parameters.items():
+            setattr(self, parameter, value)
+        return self
     
     @property 
     def n_features_in_(self):
@@ -421,13 +438,13 @@ def create_ensemble(X_train, y_train, voting='soft'):
         Trained ensemble model
     """
     try:
-        # Create the neural network classifier
+        # Create and train the neural network model first
+        nn_model, _ = train_neural_network(X_train, y_train)
+        
+        # Create the neural network classifier wrapper
         nn_classifier = KerasBinaryClassifier(
-            hidden_units=[64, 32],
-            dropout_rate=0.3,
-            learning_rate=0.001,
-            batch_size=32,
-            epochs=50
+            model=nn_model,
+            n_features=X_train.shape[1]  # This is now the correct parameter name
         )
         
         # Create the random forest classifier
@@ -455,69 +472,6 @@ def create_ensemble(X_train, y_train, voting='soft'):
     except Exception as e:
         raise Exception(f"An error occurred while creating the ensemble: {str(e)}")
 
-def save_model(model, model_path, model_type='ensemble'):
-    """
-    Save a trained model to disk.
-    
-    Parameters:
-    -----------
-    model : object
-        Trained model to save (scikit-learn or Keras)
-    model_path : str
-        Path where to save the model
-    model_type : str, optional
-        Type of model ('ensemble', 'rf', or 'nn'). Defaults to 'ensemble'
-    """
-    try:
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        
-        if model_type == 'nn':
-            # Save Keras model
-            model.save(model_path)
-            print(f"Keras model saved to {model_path}")
-        else:
-            # Save scikit-learn model
-            joblib.dump(model, model_path)
-            print(f"Scikit-learn model saved to {model_path}")
-            
-    except Exception as e:
-        raise Exception(f"An error occurred while saving the model: {str(e)}")
-
-def load_model_from_disk(model_path, model_type='ensemble'):
-    """
-    Load a saved model from disk.
-    
-    Parameters:
-    -----------
-    model_path : str
-        Path to the saved model
-    model_type : str, optional
-        Type of model ('ensemble', 'rf', or 'nn'). Defaults to 'ensemble'
-        
-    Returns:
-    --------
-    object
-        Loaded model
-    """
-    try:
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found at {model_path}")
-            
-        if model_type == 'nn':
-            # Load Keras model
-            model = load_model(model_path)
-            print(f"Keras model loaded from {model_path}")
-        else:
-            # Load scikit-learn model
-            model = joblib.load(model_path)
-            print(f"Scikit-learn model loaded from {model_path}")
-            
-        return model
-        
-    except Exception as e:
-        raise Exception(f"An error occurred while loading the model: {str(e)}")
-
 # Example usage:
 if __name__ == "__main__":
     try:
@@ -533,6 +487,10 @@ if __name__ == "__main__":
         print(f"Number of rows: {len(df_processed)}")
         print(f"Processed columns: {df_processed.columns.tolist()}")
         
+        # Save the column mapping
+        save_column_mapping(column_mapping)
+        print("\nColumn mapping saved successfully!")
+        
         # Split the data
         X_train, X_test, y_train, y_test = split_data(df_processed)
         print("\nData split results:")
@@ -540,6 +498,12 @@ if __name__ == "__main__":
         print(f"Test set size: {len(X_test)} samples")
         print(f"Training target distribution:\n{y_train.value_counts(normalize=True)}")
         print(f"Test target distribution:\n{y_test.value_counts(normalize=True)}")
+        
+        # Convert data to numpy arrays if they aren't already
+        X_train_values = X_train.values if isinstance(X_train, pd.DataFrame) else X_train
+        X_test_values = X_test.values if isinstance(X_test, pd.DataFrame) else X_test
+        y_train_values = y_train.values if isinstance(y_train, pd.Series) else y_train
+        y_test_values = y_test.values if isinstance(y_test, pd.Series) else y_test
         
         # Check for existing models
         models_dir = 'models'
@@ -550,52 +514,103 @@ if __name__ == "__main__":
         nn_path = os.path.join(models_dir, 'nn_model.h5')
         rf_path = os.path.join(models_dir, 'rf_model.joblib')
         
+        # Initialize model variables
+        rf_model = None
+        nn_model = None
+        ensemble_model = None
+        
         # Try to load existing models
         try:
             print("\nAttempting to load existing models...")
-            loaded_ensemble = load_model_from_disk(ensemble_path, 'ensemble')
-            loaded_nn = load_model_from_disk(nn_path, 'nn')
-            loaded_rf = load_model_from_disk(rf_path, 'rf')
-            print("All models loaded successfully!")
+            if os.path.exists(rf_path):
+                rf_model = load_model_from_disk(rf_path, 'rf')
+                print("Random Forest model loaded successfully!")
+                
+                # Evaluate Random Forest
+                print("\nEvaluating Random Forest model...")
+                rf_metrics = evaluate_model(rf_model, X_test_values, y_test_values)
+                print("\nRandom Forest Metrics:")
+                for metric, value in rf_metrics.items():
+                    print(f"{metric}: {value:.4f}")
             
-        except (FileNotFoundError, Exception) as e:
-            print("\nSome models not found or error loading. Training new models...")
+            if os.path.exists(nn_path):
+                nn_model = load_model_from_disk(nn_path, 'nn')
+                print("Neural Network model loaded successfully!")
+                
+                # Evaluate Neural Network
+                print("\nEvaluating Neural Network model...")
+                nn_metrics = evaluate_model(nn_model, X_test_values, y_test_values)
+                print("\nNeural Network Metrics:")
+                for metric, value in nn_metrics.items():
+                    print(f"{metric}: {value:.4f}")
             
-            # Create and train the ensemble
-            ensemble_model = create_ensemble(X_train.values, y_train.values)
-            print("\nEnsemble model trained successfully!")
+            if os.path.exists(ensemble_path):
+                ensemble_model = load_model_from_disk(ensemble_path, 'ensemble')
+                print("Ensemble model loaded successfully!")
+                
+                # Evaluate Ensemble
+                print("\nEvaluating Ensemble model...")
+                ensemble_metrics = evaluate_model(ensemble_model, X_test_values, y_test_values)
+                print("\nEnsemble Metrics:")
+                for metric, value in ensemble_metrics.items():
+                    print(f"{metric}: {value:.4f}")
+                    
+        except Exception as e:
+            print(f"\nError loading models: {str(e)}")
+            print("Will train new models...")
+        
+        # Train models if they don't exist or failed to load
+        if rf_model is None:
+            print("\nTraining Random Forest model...")
+            rf_model = train_random_forest(X_train_values, y_train_values)
+            save_model(rf_model, rf_path, 'rf')
+            print("Random Forest model saved!")
             
-            # Save the ensemble model
+            # Evaluate Random Forest
+            print("\nEvaluating Random Forest model...")
+            rf_metrics = evaluate_model(rf_model, X_test_values, y_test_values)
+            print("\nRandom Forest Metrics:")
+            for metric, value in rf_metrics.items():
+                print(f"{metric}: {value:.4f}")
+        
+        if nn_model is None:
+            print("\nTraining Neural Network model...")
+            nn_model, history = train_neural_network(X_train_values, y_train_values)
+            save_model(nn_model, nn_path, 'nn')
+            print("Neural Network model saved!")
+            
+            # Evaluate Neural Network
+            print("\nEvaluating Neural Network model...")
+            nn_metrics = evaluate_model(nn_model, X_test_values, y_test_values)
+            print("\nNeural Network Metrics:")
+            for metric, value in nn_metrics.items():
+                print(f"{metric}: {value:.4f}")
+        
+        if ensemble_model is None:
+            print("\nTraining Ensemble model...")
+            ensemble_model = create_ensemble(X_train_values, y_train_values)
             save_model(ensemble_model, ensemble_path, 'ensemble')
+            print("Ensemble model saved!")
             
-            # Save individual models
-            for name, model in ensemble_model.named_estimators_.items():
-                if name == 'nn':
-                    save_model(model.model, nn_path, 'nn')
-                else:
-                    save_model(model, rf_path, 'rf')
-            
-            # Set loaded models to newly trained ones
-            loaded_ensemble = ensemble_model
-            loaded_nn = loaded_ensemble.named_estimators_['nn'].model
-            loaded_rf = loaded_ensemble.named_estimators_['rf']
+            # Evaluate Ensemble
+            print("\nEvaluating Ensemble model...")
+            ensemble_metrics = evaluate_model(ensemble_model, X_test_values, y_test_values)
+            print("\nEnsemble Metrics:")
+            for metric, value in ensemble_metrics.items():
+                print(f"{metric}: {value:.4f}")
         
-        # Evaluate models
-        print("\nEvaluating models:")
+        # Preload explainers after all models are trained/loaded
+        print("\nPreloading explainers...")
+        from preload_explainers import preload_explainers
+        explainers = preload_explainers()
+        if explainers:
+            print("✅ Successfully preloaded all explainers!")
+        else:
+            print("❌ Failed to preload explainers.")
         
-        print("\nEnsemble Model:")
-        # Convert data to numpy arrays if they aren't already
-        X_test_values = X_test.values if isinstance(X_test, pd.DataFrame) else X_test
-        y_test_values = y_test.values if isinstance(y_test, pd.Series) else y_test
-        
-        # Then evaluate:
-        metrics = evaluate_model(loaded_ensemble, X_test_values, y_test_values)
-        
-        print("\nNeural Network Model:")
-        metrics = evaluate_model(loaded_nn, X_test_values, y_test_values)
-        
-        print("\nRandom Forest Model:")
-        metrics = evaluate_model(loaded_rf, X_test_values, y_test_values)
+        print("\nAll models, column mapping, and explainers have been saved successfully!")
         
     except Exception as e:
-        print(f"Error: {e}") 
+        print(f"An error occurred: {str(e)}")
+        import traceback
+        traceback.print_exc() 
