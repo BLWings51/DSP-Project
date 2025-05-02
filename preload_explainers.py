@@ -8,8 +8,14 @@ import pandas as pd
 import shap
 from tensorflow.keras.models import load_model, Model
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-from data_loader import KerasBinaryClassifier
-from utils import load_column_mapping, preprocess_single_transaction
+from utils import load_column_mapping, preprocess_single_transaction, KerasBinaryClassifier
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    AdaBoostClassifier,
+    GradientBoostingClassifier,
+    StackingClassifier,
+    VotingClassifier
+)
 
 import numpy as np
 
@@ -183,8 +189,10 @@ def preload_explainers(models_dir='models', background_samples=100):
 
     # 6) Now build your SHAP explainers
     explainers = {}
+    # Random Forest → Tree
     explainers['random_forest'] = shap.TreeExplainer(rf_model)
 
+    # Neural net → Kernel
     nn_wrapper = PredictProbaWrapper(keras_wrapper)
     explainers['neural_network'] = shap.KernelExplainer(
         nn_wrapper,
@@ -192,12 +200,39 @@ def preload_explainers(models_dir='models', background_samples=100):
         output_names=['Not Fraud', 'Fraud']
     )
 
-    ensemble_wrapper = EnsembleProbaWrapper(ensemble_model)
-    explainers['ensemble'] = shap.KernelExplainer(
-        ensemble_wrapper,
-        background,
-        output_names=['Not Fraud','Fraud']
-    )
+    # Ensemble → pick best explainer by type
+    if isinstance(ensemble_model, (RandomForestClassifier,
+                                   AdaBoostClassifier,
+                                   GradientBoostingClassifier)):
+        # tree-based ensemble
+        explainers['ensemble'] = shap.TreeExplainer(ensemble_model)
+
+    elif isinstance(ensemble_model, StackingClassifier):
+        # heterogeneous stack → Kernel on predict_proba
+        ensemble_wrapper = EnsembleProbaWrapper(ensemble_model)
+        explainers['ensemble'] = shap.KernelExplainer(
+            ensemble_wrapper,
+            background,
+            output_names=['Not Fraud','Fraud']
+        )
+
+    elif isinstance(ensemble_model, VotingClassifier):
+        # voting classifier → Kernel
+        ensemble_wrapper = EnsembleProbaWrapper(ensemble_model)
+        explainers['ensemble'] = shap.KernelExplainer(
+            ensemble_wrapper,
+            background,
+            output_names=['Not Fraud','Fraud']
+        )
+
+    else:
+        # fallback → Kernel on predict_proba
+        ensemble_wrapper = EnsembleProbaWrapper(ensemble_model)
+        explainers['ensemble'] = shap.KernelExplainer(
+            ensemble_wrapper,
+            background,
+            output_names=['Not Fraud','Fraud']
+        )
     
     # 7) Cache to disk
     with open(os.path.join(models_dir, 'explainers_cache.pkl'), 'wb') as f:

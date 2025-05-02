@@ -11,6 +11,13 @@ import os
 import pickle
 from preload_explainers import preload_explainers, load_background_data
 from utils import load_column_mapping, preprocess_single_transaction, load_model_from_disk
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    AdaBoostClassifier,
+    GradientBoostingClassifier,
+    StackingClassifier,
+    VotingClassifier
+)
 
 # Cache for explainers
 _explainer_cache = {}
@@ -29,7 +36,10 @@ def get_explainer(model, background_data=None):
         # 100 samples, trimmed to your model’s feature count
         background_data = load_background_data(100, getattr(model, 'n_features_in_', None))
 
-    if isinstance(model, RandomForestClassifier):
+    # Use TreeExplainer for all tree-based ensembles
+    if isinstance(model, (RandomForestClassifier,
+                           AdaBoostClassifier,
+                           GradientBoostingClassifier)):
         expl = shap.TreeExplainer(model)
     else:
         predict_fn = getattr(model, 'predict_proba', model)
@@ -79,6 +89,7 @@ def explain_prediction(model_name, transaction, feature_names, explainers, plot_
         
         # Get SHAP values - ensure we pass a 2D array
         print("Transaction shape:", transaction.shape)
+        transaction = transaction.astype(np.float32)
         shap_values = explainer(transaction)
         
         # Extract values and expected value based on explainer type
@@ -109,35 +120,67 @@ def explain_prediction(model_name, transaction, feature_names, explainers, plot_
                     single_output = vals.reshape(1, -1)  # Reshape to 2D array
             else:
                 single_output = vals.reshape(1, -1)  # Reshape to 2D array
-        else:
-            # Kernel or Permutation or high-level
-            if isinstance(vals, list):
-                single_output = np.array(vals[1]).reshape(1, -1)  # Reshape to 2D array
-            elif len(vals.shape) > 1:
-                single_output = vals[..., 1].reshape(1, -1)  # Reshape to 2D array
-            else:
-                single_output = vals.reshape(1, -1)  # Reshape to 2D array
-        
-        # Debug printing
-        print(f"Single output shape: {single_output.shape}")
-        print(f"Single output: {single_output}")
-        
-        # Get the expected value for the positive class
-        if hasattr(expected_value, "__len__"):
-            if len(expected_value) > 1:
-                expected_value = np.array([expected_value[1]])  # Convert to 1D array
-            else:
-                expected_value = np.array([expected_value[0]])  # Convert to 1D array
-        else:
-            expected_value = np.array([expected_value])  # Convert scalar to 1D array
-        
-        # Debug printing
-        print(f"Expected value shape: {expected_value.shape}")
-        print(f"Expected value: {expected_value}")
 
-        # Flatten arrays to 1D
-        sv = single_output.flatten()  # SHAP values for each feature
-        bv = expected_value.flatten()[0]  # Base value (scalar)
+                    # Debug printing
+            print(f"Single output shape: {single_output.shape}")
+            print(f"Single output: {single_output}")
+            
+            # Get the expected value for the positive class
+            if hasattr(expected_value, "__len__"):
+                if len(expected_value) > 1:
+                    expected_value = np.array([expected_value[1]])  # Convert to 1D array
+                else:
+                    expected_value = np.array([expected_value[0]])  # Convert to 1D array
+            else:
+                expected_value = np.array([expected_value])  # Convert scalar to 1D array
+            
+            # Debug printing
+            print(f"Expected value shape: {expected_value.shape}")
+            print(f"Expected value: {expected_value}")
+
+            # Flatten arrays to 1D
+            sv = single_output.flatten()  # SHAP values for each feature
+            bv = expected_value.flatten()[0]  # Base value (scalar)
+        else:
+            # … after you’ve computed `vals` and `expected_value` …
+
+            # === extract the SHAP values for the positive class ===
+            # vals might be:
+            #   - a list [vals_for_class0, vals_for_class1]
+            #   - an array shape (n_samples, n_features, n_classes)
+            #   - an array shape (n_samples, n_features) for single-output
+            if isinstance(vals, list):
+                # direct list of per-class arrays
+                single_output = np.array(vals[1])  # class 1
+            else:
+                vals = np.array(vals)
+                if vals.ndim == 3 and vals.shape[2] > 1:
+                    # e.g. shape (1, n_features, 2)
+                    single_output = vals[:, :, 1]     # pick class-1 column
+                elif vals.ndim == 3 and vals.shape[2] == 1:
+                    # e.g. shape (1, n_features, 1) – single-output model
+                    single_output = vals[:, :, 0]     # drop the last axis
+                elif vals.ndim == 2:
+                    # already (n_samples, n_features)
+                    single_output = vals
+                else:
+                    # fallback: flatten everything
+                    single_output = vals.reshape(vals.shape[0], -1)
+
+            # Now single_output is (n_samples, n_features)
+            # If you only ever explain one transaction:
+            single_output = single_output.reshape(1, -1)
+
+            ev = np.array(expected_value).flatten()
+            # pick the last element (works if ev has length 1 or 2)
+            base_value = float(ev[-1])
+
+            # … then you can flatten for plotting …
+            sv = single_output.flatten()
+            bv = base_value
+
+        
+        
         feat_vals = transaction.reshape(-1)  # Feature values
         
         if plot_type == 'force':
@@ -357,60 +400,73 @@ def load_models_from_cache(cache_path='models/explainers_cache.pkl'):
 # Example usage
 if __name__ == "__main__":
     try:
-        # Load pre-built explainers
+        # 1) Where our models live
         models_dir = 'models'
-        with open(os.path.join(models_dir, 'explainers_cache.pkl'), 'rb') as f:
-            explainers = pickle.load(f)
         
-        # Example usage with a sample transaction
-        sample_transaction = {
-            'step': 1,
-            'customer': 1,
-            'age': 35,
-            'gender': 1,
-            'zipcodeOri': 0,
-            'merchant': 1,
-            'zipMerchant': 0,
-            'category': 1,
-            'amount': 1
-        }
-        
-        # Load the column mapping
+        # 2) Load the column mapping (for single‐row preprocessing)
         column_mapping = load_column_mapping()
-        print("Column mapping loaded successfully!")
-        
-        # Preprocess the transaction using the loaded mapping
-        processed_transaction = preprocess_single_transaction(sample_transaction, column_mapping)
-        
-        # Create feature names
-        feature_names = list(sample_transaction.keys())
-        
-        # Display explanations for each model
-        model_names = {
-            'Random Forest': 'random_forest',
-            'Neural Network': 'neural_network',
-            'Ensemble': 'ensemble'
+        print("Loaded column mapping.")
+
+        # 3) Paths for each saved model
+        paths = {
+            'random_forest':  os.path.join(models_dir, 'rf_model.joblib'),
+            'neural_network': os.path.join(models_dir, 'nn_model.h5'),
+            'voting':         os.path.join(models_dir, 'ensemble_voting.joblib'),
+            'adaboost':       os.path.join(models_dir, 'ensemble_adaboost.joblib'),
+            'stacking':       os.path.join(models_dir, 'ensemble_stacking.joblib'),
         }
-        
-        for display_name, model_name in model_names.items():
-            print(f"\nGenerating SHAP explanation for {display_name}...")
-            try:
-                explanation = explain_prediction(
-                    model_name,
-                    processed_transaction,
-                    feature_names,
-                    explainers
-                )
-                print("explanation: ", explanation)
-                print("type of explanation: ", type(explanation))
-                print("len of explanation: ", len(explanation))
-                print("explanation.values: ", explanation.values)
-                print("explanation.base_values: ", explanation.base_values)
-                print("explanation.data: ", explanation.data)
-                print("explanation.feature_names: ", explanation.feature_names)
-                print("Explanation generated successfully!")
-            except Exception as e:
-                print(f"Error generating explanation for {display_name}: {str(e)}")
-                
+
+        # 4) Load each model from disk
+        models = {}
+        models['random_forest']  = load_model_from_disk(paths['random_forest'],  'rf')
+        models['neural_network'] = load_model_from_disk(paths['neural_network'], 'nn')
+        models['voting']         = load_model_from_disk(paths['voting'],         'ensemble')
+        models['adaboost']       = load_model_from_disk(paths['adaboost'],       'ensemble')
+        models['stacking']       = load_model_from_disk(paths['stacking'],       'ensemble')
+        print("Models loaded:", list(models.keys()))
+
+        # 5) One background dataset for all explainers
+        background_data = load_background_data(
+            n_samples=100,
+            n_features=getattr(models['random_forest'], 'n_features_in_', None)
+        )
+
+        # 6) Build a SHAP explainer for each
+        explainers = {
+            name: get_explainer(mdl, background_data)
+            for name, mdl in models.items()
+        }
+        print("SHAP explainers ready.")
+
+        # 7) Define a raw sample transaction
+        sample_transaction = {
+            'step':       1,
+            'customer':   'C123456',
+            'age':        35,
+            'gender':     'M',
+            'zipcodeOri': '28007',
+            'merchant':   'M654321',
+            'zipMerchant':'28007',
+            'category':   'es_transportation',
+            'amount':     42.50
+        }
+
+        # 8) Preprocess into numeric vector
+        processed = preprocess_single_transaction(sample_transaction, column_mapping)
+        feature_names = list(sample_transaction.keys())
+
+        # 9) Generate and show a SHAP force plot for each model
+        for name in ['random_forest', 'neural_network', 'voting', 'adaboost', 'stacking']:
+            print(f"\n→ Explaining {name} …")
+            fig = explain_prediction(
+                model_name   = name,
+                transaction  = processed,
+                feature_names= feature_names,
+                explainers   = explainers,
+                plot_type    = 'force'
+            )
+            plt.show()
+
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print("Error in explanation main:", e)
+        import traceback; traceback.print_exc()

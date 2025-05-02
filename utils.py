@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import joblib
 from tensorflow.keras.models import load_model
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 def save_column_mapping(column_mapping, file_path='models/column_mapping.pkl'):
     """
@@ -177,3 +178,46 @@ def load_model_from_disk(model_path, model_type='ensemble'):
         
     except Exception as e:
         raise Exception(f"An error occurred while loading the model: {str(e)}") 
+    
+class KerasBinaryClassifier(BaseEstimator, ClassifierMixin):
+    """Wrapper for Keras binary classifier with proper scikit-learn interface."""
+    
+    def __init__(self, model=None, n_features=None):
+        self.model = model
+        self.n_features = n_features  # Changed from _n_features_in to n_features
+        self._n_features_in = n_features  # Keep this for scikit-learn compatibility
+        
+    def fit(self, X, y=None):
+        """Dummy fit method that just records feature count."""
+        self._n_features_in = X.shape[1]
+        self.n_features = X.shape[1]  # Update both attributes
+        return self  # Always return self
+        
+    def predict_proba(self, X):
+        if self.model is None:
+            raise ValueError("Model not initialized")
+        # Get raw predictions and ensure they're 1D
+        p = self.model.predict(X, verbose=0).reshape(-1)
+        # Stack the "not fraud" and "fraud" columns
+        return np.column_stack([1 - p, p])
+        
+    def predict(self, X):
+        return (self.predict_proba(X)[:, 1] > 0.5).astype(int)
+    
+    def get_params(self, deep=True):
+        """Get parameters for this estimator."""
+        return {
+            'model': self.model,
+            'n_features': self.n_features
+        }
+    
+    def set_params(self, **parameters):
+        """Set the parameters of this estimator."""
+        for parameter, value in parameters.items():
+            setattr(self, parameter, value)
+        return self
+    
+    @property 
+    def n_features_in_(self):
+        """Number of features seen during fit."""
+        return self._n_features_in

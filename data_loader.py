@@ -3,17 +3,22 @@ from sklearn.preprocessing import OneHotEncoder, LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
-from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import StackingClassifier
 import numpy as np
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 # from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
+from preload_explainers import preload_explainers
 import joblib
 import os
 import pickle
-from utils import save_column_mapping, save_model, load_model_from_disk
+from utils import save_column_mapping, save_model, load_model_from_disk, KerasBinaryClassifier
 
 def load_transaction_data(file_path='banksimData.csv'):
     """
@@ -175,45 +180,6 @@ def split_data(df, target_column='fraud', test_size=0.2, random_state=42):
     except Exception as e:
         raise Exception(f"An error occurred while splitting the data: {str(e)}")
 
-def train_random_forest(X_train, y_train, n_estimators=100, max_depth=None, random_state=42):
-    """
-    Train a Random Forest classifier with balanced class weights.
-    
-    Parameters:
-    -----------
-    X_train : pandas.DataFrame or numpy.ndarray
-        Training features
-    y_train : pandas.Series or numpy.ndarray
-        Training target
-    n_estimators : int, optional
-        Number of trees in the forest. Defaults to 100
-    max_depth : int, optional
-        Maximum depth of the tree. Defaults to None (unlimited)
-    random_state : int, optional
-        Controls the randomness of the estimator. Defaults to 42
-        
-    Returns:
-    --------
-    RandomForestClassifier
-        Trained Random Forest model
-    """
-    try:
-        # Initialize the Random Forest classifier
-        rf_classifier = RandomForestClassifier(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            class_weight='balanced',  # Handle class imbalance
-            random_state=random_state,
-            n_jobs=-1  # Use all available processors
-        )
-        
-        # Train the model
-        rf_classifier.fit(X_train, y_train)
-        
-        return rf_classifier
-        
-    except Exception as e:
-        raise Exception(f"An error occurred while training the Random Forest: {str(e)}")
 
 def evaluate_model(model, X_test, y_test):
     """
@@ -285,6 +251,84 @@ def evaluate_model(model, X_test, y_test):
     }
     
     return metrics
+
+def train_random_forest(X_train, y_train, n_estimators=100, max_depth=None, random_state=42):
+    """
+    Train a Random Forest classifier with balanced class weights.
+    
+    Parameters:
+    -----------
+    X_train : pandas.DataFrame or numpy.ndarray
+        Training features
+    y_train : pandas.Series or numpy.ndarray
+        Training target
+    n_estimators : int, optional
+        Number of trees in the forest. Defaults to 100
+    max_depth : int, optional
+        Maximum depth of the tree. Defaults to None (unlimited)
+    random_state : int, optional
+        Controls the randomness of the estimator. Defaults to 42
+        
+    Returns:
+    --------
+    RandomForestClassifier
+        Trained Random Forest model
+    """
+    try:
+        # Initialize the Random Forest classifier
+        rf_classifier = RandomForestClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            class_weight='balanced',  # Handle class imbalance
+            random_state=random_state,
+            n_jobs=-1  # Use all available processors
+        )
+        
+        # Train the model
+        rf_classifier.fit(X_train, y_train)
+        
+        return rf_classifier
+        
+    except Exception as e:
+        raise Exception(f"An error occurred while training the Random Forest: {str(e)}")
+
+
+def train_adaboost(X_train, y_train, base_estimator=None, n_estimators=100, learning_rate=1.0, random_state=42):
+    """
+    Train an AdaBoostClassifier on your data.
+    """
+    if base_estimator is None:
+        base_estimator = DecisionTreeClassifier(max_depth=1, random_state=random_state)
+    ada = AdaBoostClassifier(
+        estimator=base_estimator,
+        n_estimators=n_estimators,
+        learning_rate=learning_rate,
+        random_state=random_state
+    )
+    ada.fit(X_train, y_train)
+    return ada
+
+def train_stacking(X_train, y_train, estimators=None, final_estimator=None, cv=5):
+    """
+    Train a StackingClassifier on your data.
+    """
+    if estimators is None:
+        estimators = [
+            ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
+            ('gb', GradientBoostingClassifier(n_estimators=100, random_state=42)),
+            ('dt', DecisionTreeClassifier(random_state=42)),
+        ]
+    if final_estimator is None:
+        final_estimator = LogisticRegression(max_iter=1000)
+    stack = StackingClassifier(
+        estimators=estimators,
+        final_estimator=final_estimator,
+        cv=cv,
+        n_jobs=-1,
+        passthrough=False
+    )
+    stack.fit(X_train, y_train)
+    return stack
 
 def train_neural_network(X_train, y_train, X_val=None, y_val=None, 
                         hidden_units=[64, 32], dropout_rate=0.3,
@@ -376,241 +420,127 @@ def train_neural_network(X_train, y_train, X_val=None, y_val=None,
     except Exception as e:
         raise Exception(f"An error occurred while training the neural network: {str(e)}")
 
-class KerasBinaryClassifier(BaseEstimator, ClassifierMixin):
-    """Wrapper for Keras binary classifier with proper scikit-learn interface."""
-    
-    def __init__(self, model=None, n_features=None):
-        self.model = model
-        self.n_features = n_features  # Changed from _n_features_in to n_features
-        self._n_features_in = n_features  # Keep this for scikit-learn compatibility
-        
-    def fit(self, X, y=None):
-        """Dummy fit method that just records feature count."""
-        self._n_features_in = X.shape[1]
-        self.n_features = X.shape[1]  # Update both attributes
-        return self  # Always return self
-        
-    def predict_proba(self, X):
-        if self.model is None:
-            raise ValueError("Model not initialized")
-        # Get raw predictions and ensure they're 1D
-        p = self.model.predict(X, verbose=0).reshape(-1)
-        # Stack the "not fraud" and "fraud" columns
-        return np.column_stack([1 - p, p])
-        
-    def predict(self, X):
-        return (self.predict_proba(X)[:, 1] > 0.5).astype(int)
-    
-    def get_params(self, deep=True):
-        """Get parameters for this estimator."""
-        return {
-            'model': self.model,
-            'n_features': self.n_features
-        }
-    
-    def set_params(self, **parameters):
-        """Set the parameters of this estimator."""
-        for parameter, value in parameters.items():
-            setattr(self, parameter, value)
-        return self
-    
-    @property 
-    def n_features_in_(self):
-        """Number of features seen during fit."""
-        return self._n_features_in
 
-def create_ensemble(X_train, y_train, voting='soft'):
+
+def create_ensemble(X_train, y_train, voting='soft', kind='voting'):
     """
-    Create and train an ensemble model combining Random Forest and Neural Network.
-    
-    Parameters:
-    -----------
-    X_train : numpy.ndarray
-        Training features
-    y_train : numpy.ndarray
-        Training target
-    voting : str, optional
-        Voting strategy ('hard' or 'soft'). Defaults to 'soft'
-        
-    Returns:
-    --------
-    VotingClassifier
-        Trained ensemble model
+    Create and train an ensemble model.
+    kind: 'voting' | 'adaboost' | 'stacking'
     """
     try:
-        # Create and train the neural network model first
+        # Always train the NN + wrap
         nn_model, _ = train_neural_network(X_train, y_train)
-        
-        # Create the neural network classifier wrapper
         nn_classifier = KerasBinaryClassifier(
             model=nn_model,
-            n_features=X_train.shape[1]  # This is now the correct parameter name
+            n_features=X_train.shape[1]
         )
-        
-        # Create the random forest classifier
+
         rf_classifier = RandomForestClassifier(
             n_estimators=100,
             class_weight='balanced',
-            random_state=42
-        )
-        
-        # Create the ensemble
-        ensemble = VotingClassifier(
-            estimators=[
-                ('nn', nn_classifier),
-                ('rf', rf_classifier)
-            ],
-            voting=voting,
+            random_state=42,
             n_jobs=-1
         )
-        
-        # Train the ensemble
+
+        if kind == 'voting':
+            # your original voting classifier
+            ensemble = VotingClassifier(
+                estimators=[('nn', nn_classifier), ('rf', rf_classifier)],
+                voting=voting,
+                n_jobs=-1
+            )
+
+        elif kind == 'adaboost':
+            ada = train_adaboost(X_train, y_train)
+            ensemble = VotingClassifier(
+                estimators=[('nn', nn_classifier), ('ada', ada)],
+                voting=voting,
+                n_jobs=-1
+            )
+
+        elif kind == 'stacking':
+            stack = train_stacking(X_train, y_train)
+            ensemble = VotingClassifier(
+                estimators=[('nn', nn_classifier), ('stack', stack)],
+                voting=voting,
+                n_jobs=-1
+            )
+
+        else:
+            raise ValueError(f"Unknown ensemble kind: {kind}")
+
         ensemble.fit(X_train, y_train)
-        
         return ensemble
-        
+
     except Exception as e:
         raise Exception(f"An error occurred while creating the ensemble: {str(e)}")
 
 # Example usage:
 if __name__ == "__main__":
     try:
-        # Load the data
+        # 1) Load & preprocess
         df = load_transaction_data()
-        print("Data loaded successfully!")
-        print(f"Number of rows: {len(df)}")
-        print(f"Original columns: {df.columns.tolist()}")
-        
-        # Preprocess the data
+        print("Data loaded:", df.shape)
         df_processed, column_mapping = preprocess_data(df)
-        print("\nPreprocessed data:")
-        print(f"Number of rows: {len(df_processed)}")
-        print(f"Processed columns: {df_processed.columns.tolist()}")
-        
-        # Save the column mapping
         save_column_mapping(column_mapping)
-        print("\nColumn mapping saved successfully!")
-        
-        # Split the data
+        print("Data preprocessed; mapping saved.")
+
+        # 2) Split
         X_train, X_test, y_train, y_test = split_data(df_processed)
-        print("\nData split results:")
-        print(f"Training set size: {len(X_train)} samples")
-        print(f"Test set size: {len(X_test)} samples")
-        print(f"Training target distribution:\n{y_train.value_counts(normalize=True)}")
-        print(f"Test target distribution:\n{y_test.value_counts(normalize=True)}")
-        
-        # Convert data to numpy arrays if they aren't already
-        X_train_values = X_train.values if isinstance(X_train, pd.DataFrame) else X_train
-        X_test_values = X_test.values if isinstance(X_test, pd.DataFrame) else X_test
-        y_train_values = y_train.values if isinstance(y_train, pd.Series) else y_train
-        y_test_values = y_test.values if isinstance(y_test, pd.Series) else y_test
-        
-        # Check for existing models
-        models_dir = 'models'
+        X_train_values = X_train.values
+        X_test_values  = X_test.values
+        y_train_values = y_train.values
+        y_test_values  = y_test.values
+        print("Split: train =", X_train.shape, "test =", X_test.shape)
+
+        # 3) Ensure models directory
+        models_dir = "models"
         os.makedirs(models_dir, exist_ok=True)
-        
-        # Paths for model files
-        ensemble_path = os.path.join(models_dir, 'ensemble_model.joblib')
-        nn_path = os.path.join(models_dir, 'nn_model.h5')
-        rf_path = os.path.join(models_dir, 'rf_model.joblib')
-        
-        # Initialize model variables
-        rf_model = None
-        nn_model = None
-        ensemble_model = None
-        
-        # Try to load existing models
-        try:
-            print("\nAttempting to load existing models...")
-            if os.path.exists(rf_path):
-                rf_model = load_model_from_disk(rf_path, 'rf')
-                print("Random Forest model loaded successfully!")
-                
-                # Evaluate Random Forest
-                print("\nEvaluating Random Forest model...")
-                rf_metrics = evaluate_model(rf_model, X_test_values, y_test_values)
-                print("\nRandom Forest Metrics:")
-                for metric, value in rf_metrics.items():
-                    print(f"{metric}: {value:.4f}")
-            
-            if os.path.exists(nn_path):
-                nn_model = load_model_from_disk(nn_path, 'nn')
-                print("Neural Network model loaded successfully!")
-                
-                # Evaluate Neural Network
-                print("\nEvaluating Neural Network model...")
-                nn_metrics = evaluate_model(nn_model, X_test_values, y_test_values)
-                print("\nNeural Network Metrics:")
-                for metric, value in nn_metrics.items():
-                    print(f"{metric}: {value:.4f}")
-            
-            if os.path.exists(ensemble_path):
-                ensemble_model = load_model_from_disk(ensemble_path, 'ensemble')
-                print("Ensemble model loaded successfully!")
-                
-                # Evaluate Ensemble
-                print("\nEvaluating Ensemble model...")
-                ensemble_metrics = evaluate_model(ensemble_model, X_test_values, y_test_values)
-                print("\nEnsemble Metrics:")
-                for metric, value in ensemble_metrics.items():
-                    print(f"{metric}: {value:.4f}")
-                    
-        except Exception as e:
-            print(f"\nError loading models: {str(e)}")
-            print("Will train new models...")
-        
-        # Train models if they don't exist or failed to load
-        if rf_model is None:
-            print("\nTraining Random Forest model...")
-            rf_model = train_random_forest(X_train_values, y_train_values)
-            save_model(rf_model, rf_path, 'rf')
-            print("Random Forest model saved!")
-            
-            # Evaluate Random Forest
-            print("\nEvaluating Random Forest model...")
-            rf_metrics = evaluate_model(rf_model, X_test_values, y_test_values)
-            print("\nRandom Forest Metrics:")
-            for metric, value in rf_metrics.items():
-                print(f"{metric}: {value:.4f}")
-        
-        if nn_model is None:
-            print("\nTraining Neural Network model...")
-            nn_model, history = train_neural_network(X_train_values, y_train_values)
-            save_model(nn_model, nn_path, 'nn')
-            print("Neural Network model saved!")
-            
-            # Evaluate Neural Network
-            print("\nEvaluating Neural Network model...")
-            nn_metrics = evaluate_model(nn_model, X_test_values, y_test_values)
-            print("\nNeural Network Metrics:")
-            for metric, value in nn_metrics.items():
-                print(f"{metric}: {value:.4f}")
-        
-        if ensemble_model is None:
-            print("\nTraining Ensemble model...")
-            ensemble_model = create_ensemble(X_train_values, y_train_values)
-            save_model(ensemble_model, ensemble_path, 'ensemble')
-            print("Ensemble model saved!")
-            
-            # Evaluate Ensemble
-            print("\nEvaluating Ensemble model...")
-            ensemble_metrics = evaluate_model(ensemble_model, X_test_values, y_test_values)
-            print("\nEnsemble Metrics:")
-            for metric, value in ensemble_metrics.items():
-                print(f"{metric}: {value:.4f}")
-        
-        # Preload explainers after all models are trained/loaded
-        print("\nPreloading explainers...")
-        from preload_explainers import preload_explainers
-        explainers = preload_explainers()
-        if explainers:
-            print("✅ Successfully preloaded all explainers!")
+
+        # 4) Train or load RF
+        rf_path = os.path.join(models_dir, "rf_model.joblib")
+        if os.path.exists(rf_path):
+            rf_model = load_model_from_disk(rf_path, "rf")
+            print("RF loaded from disk.")
         else:
-            print("❌ Failed to preload explainers.")
-        
-        print("\nAll models, column mapping, and explainers have been saved successfully!")
+            rf_model = train_random_forest(X_train_values, y_train_values)
+            save_model(rf_model, rf_path, "rf")
+            print("RF trained and saved.")
+        evaluate_model(rf_model, X_test_values, y_test_values)
+
+        # 5) Train or load NN
+        nn_path = os.path.join(models_dir, "nn_model.h5")
+        if os.path.exists(nn_path):
+            nn_model = load_model_from_disk(nn_path, "nn")
+            print("NN loaded from disk.")
+        else:
+            nn_model, _ = train_neural_network(X_train_values, y_train_values)
+            save_model(nn_model, nn_path, "nn")
+            print("NN trained and saved.")
+        evaluate_model(nn_model, X_test_values, y_test_values)
+
+        # 6) Train & evaluate each ensemble kind
+        for kind in ("voting", "adaboost", "stacking"):
+            path = os.path.join(models_dir, f"ensemble_{kind}.joblib")
+            if os.path.exists(path):
+                ens = load_model_from_disk(path, "ensemble")
+                print(f"{kind.title()} ensemble loaded.")
+            else:
+                ens = create_ensemble(
+                    X_train_values, y_train_values,
+                    voting="soft",
+                    kind=kind
+                )
+                save_model(ens, path, "ensemble")
+                print(f"{kind.title()} ensemble trained and saved.")
+            print(f"\nEvaluating {kind.title()} Ensemble:")
+            evaluate_model(ens, X_test_values, y_test_values)
+
+        # 7) Preload SHAP/LIME explainers
+        print("\nPreloading explainers...")
+        explainers = preload_explainers(models_dir=models_dir, background_samples=100)
+        print("✅ Explainers cached!")
         
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        import traceback
-        traceback.print_exc() 
+        print("Fatal error in main:", str(e))
+        import traceback; traceback.print_exc()
