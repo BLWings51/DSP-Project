@@ -1,4 +1,3 @@
-```markdown
 # 1. FRAUD DETECTION INTERACTIVE APP
 
 An educational and exploratory console-style application for detecting fraudulent transactions using machine learning. Allows users to play a guessing tutorial, configure custom transactions for multiple models (Random Forest, Neural Network, Ensembles), and view explainable AI visualizations (SHAP and LIME).
