@@ -28,6 +28,16 @@ An educational and exploratory application for detecting fraudulent transactions
 3. In Tutorial, guess the fraudulent transaction and view your score.
 4. In Model Demo, configure a transaction, click Predict & Explain, and view visualizations.
 
+## Preloading Explainers
+
+Before running the main application, you should preload the SHAP explainers to ensure optimal performance:
+
+```bash
+python preload_explainers.py
+```
+
+This will build and cache the SHAP explainers for all models, which is necessary for generating the explainability visualizations. Run this command once before starting the application.
+
 ## Project Structure
 
 ```
