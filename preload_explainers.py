@@ -1,5 +1,3 @@
-# preload_explainers.py
-
 import os
 import pickle
 import joblib
@@ -83,23 +81,23 @@ def preload_explainers(models_dir='models', background_samples=100):
     """
     Loads RF, NN, and three ensemble variants; builds and caches SHAP explainers.
     """
-    # 1) Load base models
+    # Load base models
     rf_model      = joblib.load(os.path.join(models_dir, 'rf_model.joblib'))
     raw_keras_net = load_model(os.path.join(models_dir, 'nn_model.h5'))
 
-    # 2) Load each ensemble variant from disk
+    ## Load each ensemble variant from disk
     ensemble_models = {}
     for kind in ['voting', 'adaboost', 'stacking']:
         path = os.path.join(models_dir, f'ensemble_{kind}.joblib')
         ensemble_models[kind] = joblib.load(path)
 
-    # 3) Determine feature count
+    #  Determine feature count
     n_features = rf_model.n_features_in_
 
-    # 4) Wrap the Keras net
+    #  Wrap the Keras net
     keras_wrapper = KerasBinaryClassifier(model=raw_keras_net, n_features=n_features)
 
-    # 5) Build a background dataset
+    # Build a background dataset
     background = load_background_data(background_samples, n_features)
     print(f"[preload_explainers] Background of {background.shape} ready")
 
@@ -108,7 +106,7 @@ def preload_explainers(models_dir='models', background_samples=100):
     # === Random Forest ===
     print("[preload_explainers] Building TreeExplainer for Random Forest…")
     explainers['random_forest'] = shap.TreeExplainer(rf_model)
-    print("[preload_explainers] ✔ Random Forest explainer complete")
+    print("[preload_explainers] working ! Random Forest explainer complete")
 
     # === Neural Network ===
     print("[preload_explainers] Building KernelExplainer for Neural Network…")
@@ -118,7 +116,7 @@ def preload_explainers(models_dir='models', background_samples=100):
         background,
         output_names=['Not Fraud','Fraud']
     )
-    print("[preload_explainers] ✔ Neural Network explainer complete")
+    print("[preload_explainers] working ! Neural Network explainer complete")
 
     # === Ensemble variants ===
     for kind, model in ensemble_models.items():
@@ -129,7 +127,7 @@ def preload_explainers(models_dir='models', background_samples=100):
             print(f"[preload_explainers] Building TreeExplainer for {title}…")
             expl = shap.TreeExplainer(model)
             explainers[key] = expl
-            print(f"[preload_explainers] ✔ {title} TreeExplainer complete")
+            print(f"[preload_explainers] working ! {title} TreeExplainer complete")
 
         elif isinstance(model, (VotingClassifier, StackingClassifier)):
             print(f"[preload_explainers] Building KernelExplainer for {title}…")
@@ -140,7 +138,7 @@ def preload_explainers(models_dir='models', background_samples=100):
                 output_names=['Not Fraud','Fraud']
             )
             explainers[key] = expl
-            print(f"[preload_explainers] ✔ {title} KernelExplainer complete")
+            print(f"[preload_explainers] working ! {title} KernelExplainer complete")
 
         else:
             print(f"[preload_explainers] Building fallback KernelExplainer for {title}…")
@@ -151,9 +149,9 @@ def preload_explainers(models_dir='models', background_samples=100):
                 output_names=['Not Fraud','Fraud']
             )
             explainers[key] = expl
-            print(f"[preload_explainers] ✔ {title} fallback explainer complete")
+            print(f"[preload_explainers] working ! {title} fallback explainer complete")
 
-    # 6) Cache to disk
+    # Cache to disk
     cache_path = os.path.join(models_dir, 'explainers_cache.pkl')
     with open(cache_path, 'wb') as f:
         pickle.dump(explainers, f)
@@ -164,4 +162,4 @@ def preload_explainers(models_dir='models', background_samples=100):
 if __name__ == "__main__":
     os.makedirs('models', exist_ok=True)
     preload_explainers()
-    print("✅ preload_explainers finished.")
+    print("preload_explainers finished.")

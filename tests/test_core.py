@@ -1,5 +1,3 @@
-# tests/test_core.py
-
 import pandas as pd
 import numpy as np
 import pytest
@@ -12,7 +10,6 @@ from data_loader import (
 )
 from utils import preprocess_single_transaction
 
-# --- fixtures -------------------------------------------------------------
 
 @pytest.fixture
 def small_csv(tmp_path):
@@ -34,7 +31,6 @@ def small_csv(tmp_path):
     return str(p)
 
 
-# --- tests ---------------------------------------------------------------
 
 def test_load_transaction_data(small_csv):
     df = load_transaction_data(file_path=small_csv)
@@ -70,7 +66,6 @@ def test_preprocess_data_and_mapping():
     for col in ['step', 'age', 'amount']:
         assert 0.0 <= proc[col].min() <= proc[col].max() <= 1.0
 
-    # Each categorical column should have a mapping and matching unique count
     for col in [
         'customer', 'gender', 'zipcodeOri',
         'merchant', 'zipMerchant', 'category'
@@ -98,10 +93,10 @@ def test_preprocess_single_transaction_roundtrip():
 
     flat = np.array(arr).flatten()
 
-    # 1) Length matches number of columns in raw_row
+    # Length matches number of columns in raw_row
     assert flat.shape[0] == len(raw_row)
 
-    # 2) All entries are numeric types (no strings)
+    # All entries are numeric types (no strings)
     for v in flat:
         assert isinstance(v, (int, float, np.integer, np.floating))
 

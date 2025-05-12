@@ -1,5 +1,3 @@
-# tests/test_integration.py
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -34,21 +32,21 @@ def test_preprocess_data_and_mapping(small_csv):
     df = load_transaction_data(file_path=small_csv)
     proc, col_map = preprocess_data(df)
 
-    # 1) All non-fraud columns in proc are normalized to [0,1]
+    # All non-fraud columns in proc are normalized to [0,1]
     for col in proc.columns:
         if col == 'fraud':
             continue
         mn, mx = proc[col].min(), proc[col].max()
         assert 0.0 <= mn <= mx <= 1.0, f"{col} out of [0,1]: {mn},{mx}"
 
-    # 2) column_mapping must have exactly age_median + the object-dtype columns in the raw CSV
+    # column_mapping must have exactly age_median + the object-dtype columns in the raw CSV
     raw = pd.read_csv(small_csv)
     obj_cols = raw.select_dtypes(include=['object']).columns.tolist()
     obj_cols = [c for c in obj_cols if c != 'fraud']
     expected_keys = set(obj_cols + ['age_median'])
     assert set(col_map.keys()) == expected_keys
 
-    # 3) Each mapping (except age_median) is a dict mapping original -> int
+    # Each mapping (except age_median) is a dict mapping original -> int
     for k,v in col_map.items():
         if k == 'age_median':
             assert isinstance(v, float)

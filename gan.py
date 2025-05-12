@@ -250,7 +250,6 @@ def save_synthetic_samples(synthetic_df, filename='synthetic_fraud.csv', directo
     except Exception as e:
         raise Exception(f"Error saving synthetic samples: {str(e)}")
 
-# Example usage
 if __name__ == "__main__":
     from data_loader import load_transaction_data, preprocess_data
     

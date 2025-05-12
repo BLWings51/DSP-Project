@@ -475,17 +475,17 @@ def create_ensemble(X_train, y_train, voting='soft', kind='voting'):
     except Exception as e:
         raise Exception(f"An error occurred while creating the ensemble: {str(e)}")
 
-# Example usage:
+
 if __name__ == "__main__":
     try:
-        # 1) Load & preprocess
+        # Load & preprocess
         df = load_transaction_data()
         print("Data loaded:", df.shape)
         df_processed, column_mapping = preprocess_data(df)
         save_column_mapping(column_mapping)
         print("Data preprocessed; mapping saved.")
 
-        # 2) Split
+        # Split
         X_train, X_test, y_train, y_test = split_data(df_processed)
         X_train_values = X_train.values
         X_test_values  = X_test.values
@@ -493,11 +493,11 @@ if __name__ == "__main__":
         y_test_values  = y_test.values
         print("Split: train =", X_train.shape, "test =", X_test.shape)
 
-        # 3) Ensure models directory
+        # Ensure models directory
         models_dir = "models"
         os.makedirs(models_dir, exist_ok=True)
 
-        # 4) Train or load RF
+        #Train or load RF
         rf_path = os.path.join(models_dir, "rf_model.joblib")
         if os.path.exists(rf_path):
             rf_model = load_model_from_disk(rf_path, "rf")
@@ -508,7 +508,7 @@ if __name__ == "__main__":
             print("RF trained and saved.")
         evaluate_model(rf_model, X_test_values, y_test_values)
 
-        # 5) Train or load NN
+        # Train or load NN
         nn_path = os.path.join(models_dir, "nn_model.h5")
         if os.path.exists(nn_path):
             nn_model = load_model_from_disk(nn_path, "nn")
@@ -519,7 +519,7 @@ if __name__ == "__main__":
             print("NN trained and saved.")
         evaluate_model(nn_model, X_test_values, y_test_values)
 
-        # 6) Train & evaluate each ensemble kind
+        # Train & evaluate each ensemble kind
         for kind in ("voting", "adaboost", "stacking"):
             path = os.path.join(models_dir, f"ensemble_{kind}.joblib")
             if os.path.exists(path):
@@ -539,7 +539,7 @@ if __name__ == "__main__":
         # 7) Preload SHAP/LIME explainers
         print("\nPreloading explainers...")
         explainers = preload_explainers(models_dir=models_dir, background_samples=100)
-        print("✅ Explainers cached!")
+        print("Explainers cached!")
         
     except Exception as e:
         print("Fatal error in main:", str(e))

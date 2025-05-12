@@ -49,7 +49,7 @@ def explain_prediction(model_name, transaction, feature_names, explainers, plot_
     Returns a matplotlib.Figure.
     """
     try:
-        # 1) Ensure transaction is 2D float32 array
+        # Ensure transaction is 2D float32 array
         if isinstance(transaction, pd.Series):
             arr = transaction.values.astype(np.float32).reshape(1, -1)
         elif isinstance(transaction, np.ndarray):
@@ -59,11 +59,11 @@ def explain_prediction(model_name, transaction, feature_names, explainers, plot_
         else:
             raise ValueError("Transaction must be a pandas Series or numpy array")
 
-        # 2) Lookup explainer and get SHAP values
+        #  Lookup explainer and get SHAP values
         explainer = explainers[model_name]
         raw_shap = explainer(arr)
 
-        # 3) Extract raw values and base value
+        # Extract raw values and base value
         if hasattr(raw_shap, "values"):
             vals = raw_shap.values
             exp_val = raw_shap.base_values
@@ -71,7 +71,7 @@ def explain_prediction(model_name, transaction, feature_names, explainers, plot_
             vals     = raw_shap
             exp_val  = explainer.expected_value
 
-        # 4) Collapse to positive‐class shap values
+        # Collapse to positive‐class shap values
         #    Handles various shapes: list, (1,n,2), (1,n,1), (1,n)
         if isinstance(vals, list):
             so = np.array(vals[1])
@@ -87,15 +87,14 @@ def explain_prediction(model_name, transaction, feature_names, explainers, plot_
                 so = vals.reshape(vals.shape[0], -1)
         single_output = so.reshape(1, -1)
 
-        # 5) Extract scalar base value (positive class)
+        # Extract scalar base value (positive class)
         ev = np.array(exp_val).flatten()
         base_value = float(ev[-1])
 
-        # 6) Flatten for plotting
+        # Flatten for plotting
         sv = single_output.flatten()
         fv = arr.flatten()
 
-        # === ISSUE #4 FIX: convert to percentage & annotate ===
         sv = sv * 100.0
         bv = base_value * 100.0
         title = (
@@ -155,63 +154,6 @@ def explain_prediction(model_name, transaction, feature_names, explainers, plot_
     except Exception as e:
         raise Exception(f"An error occurred while generating SHAP explanation: {e}")
 
-def explain_with_lime(model, transaction, feature_names, class_names=['Not Fraud','Fraud'],
-                     num_features=10, num_samples=5000):
-    """
-    Generate a LIME explanation for a single transaction.
-    """
-    from lime.lime_tabular import LimeTabularExplainer
-
-    if isinstance(transaction, pd.Series):
-        arr = transaction.values
-    else:
-        arr = np.asarray(transaction).reshape(-1)
-
-    explainer = LimeTabularExplainer(
-        training_data=arr.reshape(1,-1),
-        feature_names=feature_names,
-        class_names=class_names,
-        mode='classification'
-    )
-    explanation = explainer.explain_instance(
-        data_row=arr,
-        predict_fn=model.predict_proba,
-        num_features=num_features,
-        num_samples=num_samples
-    )
-    return explanation
-
-
-def plot_lime_explanation(explanation, save_path=None):
-    """
-    Plot LIME explanation and optionally save it.
-    
-    Parameters:
-    -----------
-    explanation : lime.explanation.Explanation
-        LIME explanation object
-    save_path : str, optional
-        Path to save the plot. If None, plot is displayed
-    """
-    try:
-        # Create figure
-        plt.figure(figsize=(10, 6))
-        
-        # Plot explanation
-        explanation.as_pyplot_figure()
-        plt.title('LIME Explanation for Transaction Prediction')
-        plt.tight_layout()
-        
-        # Save or show plot
-        if save_path:
-            plt.savefig(save_path)
-            plt.close()
-        else:
-            plt.show()
-            
-    except Exception as e:
-        raise Exception(f"An error occurred while plotting LIME explanation: {str(e)}")
-
 def load_explainers_from_cache(cache_path='models/explainers_cache.pkl'):
     """
     Loads the dict of SHAP explainers under keys
@@ -230,17 +172,16 @@ def load_explainers_from_cache(cache_path='models/explainers_cache.pkl'):
 
     return explainers
 
-# Example usage
 if __name__ == "__main__":
     try:
-        # 1) Where our models live
+        # Where our models live
         models_dir = 'models'
         
-        # 2) Load the column mapping (for single‐row preprocessing)
+        # Load the column mapping (for single‐row preprocessing)
         column_mapping = load_column_mapping()
         print("Loaded column mapping.")
 
-        # 3) Paths for each saved model
+        # Paths for each saved model
         paths = {
             'random_forest':  os.path.join(models_dir, 'rf_model.joblib'),
             'neural_network': os.path.join(models_dir, 'nn_model.h5'),
@@ -249,7 +190,7 @@ if __name__ == "__main__":
             'stacking':       os.path.join(models_dir, 'ensemble_stacking.joblib'),
         }
 
-        # 4) Load each model from disk
+        # Load each model from disk
         models = {}
         models['random_forest']  = load_model_from_disk(paths['random_forest'],  'rf')
         models['neural_network'] = load_model_from_disk(paths['neural_network'], 'nn')
@@ -258,20 +199,20 @@ if __name__ == "__main__":
         models['stacking']       = load_model_from_disk(paths['stacking'],       'ensemble')
         print("Models loaded:", list(models.keys()))
 
-        # 5) One background dataset for all explainers
+        # One background dataset for all explainers
         background_data = load_background_data(
             n_samples=100,
             n_features=getattr(models['random_forest'], 'n_features_in_', None)
         )
 
-        # 6) Build a SHAP explainer for each
+        # Build a SHAP explainer for each
         explainers = {
             name: get_explainer(mdl, background_data)
             for name, mdl in models.items()
         }
         print("SHAP explainers ready.")
 
-        # 7) Define a raw sample transaction
+        # Define a raw sample transaction
         sample_transaction = {
             'step':       1,
             'customer':   'C123456',
@@ -284,11 +225,11 @@ if __name__ == "__main__":
             'amount':     42.50
         }
 
-        # 8) Preprocess into numeric vector
+        # Preprocess into numeric vector
         processed = preprocess_single_transaction(sample_transaction, column_mapping)
         feature_names = list(sample_transaction.keys())
 
-        # 9) Generate and show a SHAP force plot for each model
+        #  Generate and show a SHAP force plot for each model
         for name in ['random_forest', 'neural_network', 'voting', 'adaboost', 'stacking']:
             print(f"\n→ Explaining {name} …")
             fig = explain_prediction(
